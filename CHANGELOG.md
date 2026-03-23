@@ -1,5 +1,11 @@
 # @elisoncampos/local-router
 
+## 0.2.1
+
+### Patch Changes
+
+- [`0a7afa2`](https://github.com/elisoncampos/local-router/commit/0a7afa2b6b122e918b00104ca2ed0277a6d207a8) Thanks [@elisoncampos](https://github.com/elisoncampos)! - Fix an issue where running the cli on certain circunstances would cause an error
+
 ## 0.2.0
 
 ### Minor Changes
