@@ -41,8 +41,12 @@ export function removeProtocol(hostname: string): string {
   return hostname.replace(/^https?:\/\//i, "").split("/")[0].trim();
 }
 
+function trimTrailingDots(hostname: string): string {
+  return hostname.replace(/\.+$/, "");
+}
+
 export function normalizeExplicitHostname(hostname: string): string {
-  const normalized = removeProtocol(hostname).toLowerCase();
+  const normalized = trimTrailingDots(removeProtocol(hostname).toLowerCase());
 
   if (!normalized) {
     throw new Error("Hostname cannot be empty.");
@@ -68,4 +72,24 @@ export function normalizeExplicitHostname(hostname: string): string {
   }
 
   return normalized;
+}
+
+export function normalizeRequestHostname(hostname: string): string {
+  const authority = removeProtocol(hostname);
+  if (!authority) return "";
+
+  if (authority.startsWith("[")) {
+    const closingBracketIndex = authority.indexOf("]");
+    const bracketedHost =
+      closingBracketIndex === -1 ? authority.slice(1) : authority.slice(1, closingBracketIndex);
+    return trimTrailingDots(bracketedHost.toLowerCase());
+  }
+
+  const lastColonIndex = authority.lastIndexOf(":");
+  const withoutPort =
+    lastColonIndex === -1 || authority.includes(":", lastColonIndex + 1)
+      ? authority
+      : authority.slice(0, lastColonIndex);
+
+  return trimTrailingDots(withoutPort.toLowerCase());
 }

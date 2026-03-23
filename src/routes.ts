@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { RouteMapping } from "./types.js";
-import { fixOwnership, isErrnoException } from "./utils.js";
+import { fixOwnership, isErrnoException, normalizeExplicitHostname } from "./utils.js";
 
 const STALE_LOCK_THRESHOLD_MS = 10_000;
 const LOCK_MAX_RETRIES = 20;
@@ -34,6 +34,17 @@ function isValidRoute(value: unknown): value is RouteMapping {
     typeof (value as RouteMapping).port === "number" &&
     typeof (value as RouteMapping).pid === "number"
   );
+}
+
+function normalizeRoute(route: RouteMapping): RouteMapping | null {
+  try {
+    return {
+      ...route,
+      hostname: normalizeExplicitHostname(route.hostname),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export class RouteStore {
@@ -140,7 +151,10 @@ export class RouteStore {
         return [];
       }
 
-      const routes = parsed.filter(isValidRoute);
+      const routes = parsed.filter(isValidRoute).flatMap((route) => {
+        const normalized = normalizeRoute(route);
+        return normalized ? [normalized] : [];
+      });
       const aliveRoutes = routes.filter((route) => this.isProcessAlive(route.pid));
 
       if (persistCleanup && aliveRoutes.length !== routes.length) {
@@ -160,6 +174,7 @@ export class RouteStore {
   }
 
   addRoute(hostname: string, port: number, pid: number, force = false): void {
+    const normalizedHostname = normalizeExplicitHostname(hostname);
     this.ensureDir();
     if (!this.acquireLock()) {
       throw new Error("Failed to acquire route lock.");
@@ -167,13 +182,13 @@ export class RouteStore {
 
     try {
       const routes = this.loadRoutes(true);
-      const existing = routes.find((route) => route.hostname === hostname);
+      const existing = routes.find((route) => route.hostname === normalizedHostname);
       if (existing && existing.pid !== pid && this.isProcessAlive(existing.pid) && !force) {
-        throw new RouteConflictError(hostname, existing.pid);
+        throw new RouteConflictError(normalizedHostname, existing.pid);
       }
 
-      const nextRoutes = routes.filter((route) => route.hostname !== hostname);
-      nextRoutes.push({ hostname, port, pid });
+      const nextRoutes = routes.filter((route) => route.hostname !== normalizedHostname);
+      nextRoutes.push({ hostname: normalizedHostname, port, pid });
       this.saveRoutes(nextRoutes);
     } finally {
       this.releaseLock();
@@ -181,13 +196,14 @@ export class RouteStore {
   }
 
   removeRoute(hostname: string): void {
+    const normalizedHostname = normalizeExplicitHostname(hostname);
     this.ensureDir();
     if (!this.acquireLock()) {
       throw new Error("Failed to acquire route lock.");
     }
 
     try {
-      const nextRoutes = this.loadRoutes(true).filter((route) => route.hostname !== hostname);
+      const nextRoutes = this.loadRoutes(true).filter((route) => route.hostname !== normalizedHostname);
       this.saveRoutes(nextRoutes);
     } finally {
       this.releaseLock();

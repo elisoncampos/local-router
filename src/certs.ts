@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as tls from "node:tls";
 import { promisify } from "node:util";
-import { fixOwnership } from "./utils.js";
+import { fixOwnership, normalizeRequestHostname } from "./utils.js";
 
 const CA_VALIDITY_DAYS = 3650;
 const SERVER_VALIDITY_DAYS = 365;
@@ -288,25 +288,27 @@ export function createSNICallback(stateDir: string, defaultCert: Buffer, default
 
   return async (servername: string, callback: (err: Error | null, ctx?: tls.SecureContext) => void) => {
     try {
-      if (!servername || servername === "localhost") {
+      const normalizedServername = normalizeRequestHostname(servername);
+
+      if (!normalizedServername || normalizedServername === "localhost") {
         callback(null, defaultContext);
         return;
       }
 
-      const cached = cache.get(servername);
+      const cached = cache.get(normalizedServername);
       if (cached) {
         callback(null, cached);
         return;
       }
 
-      const safeName = sanitizeHostForFilename(servername);
+      const safeName = sanitizeHostForFilename(normalizedServername);
       const certPath = path.join(stateDir, HOST_CERTS_DIR, `${safeName}.pem`);
       const keyPath = path.join(stateDir, HOST_CERTS_DIR, `${safeName}-key.pem`);
 
       let resolvedCertPath = certPath;
       let resolvedKeyPath = keyPath;
       if (!fileExists(certPath) || !fileExists(keyPath) || !isCertValid(certPath) || !isCertSignatureStrong(certPath)) {
-        const generated = await generateHostCertAsync(stateDir, servername);
+        const generated = await generateHostCertAsync(stateDir, normalizedServername);
         resolvedCertPath = generated.certPath;
         resolvedKeyPath = generated.keyPath;
       }
@@ -315,7 +317,7 @@ export function createSNICallback(stateDir: string, defaultCert: Buffer, default
         cert: fs.readFileSync(resolvedCertPath),
         key: fs.readFileSync(resolvedKeyPath),
       });
-      cache.set(servername, context);
+      cache.set(normalizedServername, context);
       callback(null, context);
     } catch (error) {
       callback(error instanceof Error ? error : new Error(String(error)), defaultContext);

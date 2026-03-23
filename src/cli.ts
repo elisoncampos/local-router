@@ -40,7 +40,9 @@ const POLL_INTERVAL_MS = 3000;
 const EXIT_TIMEOUT_MS = 2000;
 const START_TIMEOUT_MS = 30_000;
 const AUTO_STOP_IDLE_MS = 3000;
+const AUTO_STOP_STARTUP_GRACE_MS = 15_000;
 const CLI_ENTRY_PATH = fileURLToPath(import.meta.url);
+const PACKAGE_VERSION = getPackageVersion();
 
 interface RunOptions {
   force: boolean;
@@ -53,6 +55,16 @@ interface RunOptions {
 interface ProxyOptions extends ProxyRuntimeConfig {
   foreground: boolean;
   autoStopWhenIdle: boolean;
+}
+
+function getPackageVersion(): string {
+  try {
+    const packageJsonPath = path.join(path.dirname(path.dirname(CLI_ENTRY_PATH)), "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as { version?: string };
+    return packageJson.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
 }
 
 function maybeWarnAboutNodeFallback(): void {
@@ -425,6 +437,7 @@ function startProxyServer(store: RouteStore, runtime: ProxyOptions, stateDir: st
   let poller: ReturnType<typeof setInterval> | null = null;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   let cleaningUp = false;
+  let hasSeenRoutes = cachedRoutes.length > 0;
 
   const clearIdleTimer = () => {
     if (!idleTimer) return;
@@ -434,6 +447,7 @@ function startProxyServer(store: RouteStore, runtime: ProxyOptions, stateDir: st
 
   const scheduleIdleShutdown = () => {
     if (!runtime.autoStopWhenIdle || idleTimer || cachedRoutes.length > 0) return;
+    const delay = hasSeenRoutes ? AUTO_STOP_IDLE_MS : AUTO_STOP_STARTUP_GRACE_MS;
 
     idleTimer = setTimeout(() => {
       idleTimer = null;
@@ -441,7 +455,7 @@ function startProxyServer(store: RouteStore, runtime: ProxyOptions, stateDir: st
       if (cachedRoutes.length === 0) {
         cleanup();
       }
-    }, AUTO_STOP_IDLE_MS);
+    }, delay);
     idleTimer.unref();
   };
 
@@ -450,6 +464,7 @@ function startProxyServer(store: RouteStore, runtime: ProxyOptions, stateDir: st
       cachedRoutes = store.loadRoutes(true);
       syncHostsFromStore(store);
       if (cachedRoutes.length > 0) {
+        hasSeenRoutes = true;
         clearIdleTimer();
       } else {
         scheduleIdleShutdown();
@@ -472,7 +487,6 @@ function startProxyServer(store: RouteStore, runtime: ProxyOptions, stateDir: st
   poller.unref();
 
   syncHostsFromStore(store);
-  scheduleIdleShutdown();
 
   let tlsOptions: ProxyTlsOptions | undefined;
   if (runtime.httpsEnabled) {
@@ -527,6 +541,8 @@ function startProxyServer(store: RouteStore, runtime: ProxyOptions, stateDir: st
     if (runtime.httpsEnabled) {
       console.log(chalk.gray(`HTTPS -> ${runtime.httpsPort}`));
     }
+
+    scheduleIdleShutdown();
   };
 
   const registerServerError = (label: string, port: number) => (error: NodeJS.ErrnoException) => {
@@ -899,7 +915,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "--version" || command === "-v") {
-    console.log("0.1.0");
+    console.log(PACKAGE_VERSION);
     return;
   }
 

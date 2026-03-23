@@ -2,27 +2,53 @@ import * as http from "node:http";
 import * as http2 from "node:http2";
 import * as net from "node:net";
 import type { ProxyTlsOptions, RouteInfo } from "./types.js";
-import { escapeHtml, formatUrl } from "./utils.js";
+import { escapeHtml, formatUrl, normalizeRequestHostname } from "./utils.js";
 import { getHealthHeader } from "./state.js";
 
-function getRequestHost(req: http.IncomingMessage): string {
+function getRequestAuthority(req: http.IncomingMessage): string {
   const authority = req.headers[":authority"];
   if (typeof authority === "string" && authority) return authority;
+  if (Array.isArray(req.headers.host)) {
+    return req.headers.host[0] ?? "";
+  }
   return req.headers.host ?? "";
 }
 
-function buildForwardedHeaders(req: http.IncomingMessage, tls: boolean): Record<string, string> {
+function getRequestHost(req: http.IncomingMessage): string {
+  return normalizeRequestHostname(getRequestAuthority(req));
+}
+
+function getAuthorityPort(authority: string): string | undefined {
+  if (!authority) return undefined;
+
+  if (authority.startsWith("[")) {
+    const closingBracketIndex = authority.indexOf("]");
+    if (closingBracketIndex !== -1 && authority[closingBracketIndex + 1] === ":") {
+      return authority.slice(closingBracketIndex + 2);
+    }
+    return undefined;
+  }
+
+  const lastColonIndex = authority.lastIndexOf(":");
+  if (lastColonIndex === -1) return undefined;
+  return authority.slice(lastColonIndex + 1);
+}
+
+function buildForwardedHeaders(
+  req: http.IncomingMessage,
+  authority: string,
+  tls: boolean
+): Record<string, string> {
   const remoteAddress = req.socket.remoteAddress || "127.0.0.1";
-  const hostHeader = getRequestHost(req);
 
   return {
     "x-forwarded-for": req.headers["x-forwarded-for"]
       ? `${req.headers["x-forwarded-for"]}, ${remoteAddress}`
       : remoteAddress,
     "x-forwarded-proto": (req.headers["x-forwarded-proto"] as string) || (tls ? "https" : "http"),
-    "x-forwarded-host": (req.headers["x-forwarded-host"] as string) || hostHeader,
+    "x-forwarded-host": (req.headers["x-forwarded-host"] as string) || authority,
     "x-forwarded-port":
-      (req.headers["x-forwarded-port"] as string) || hostHeader.split(":")[1] || (tls ? "443" : "80"),
+      (req.headers["x-forwarded-port"] as string) || getAuthorityPort(authority) || (tls ? "443" : "80"),
   };
 }
 
@@ -87,7 +113,8 @@ export function createProxyServers(options: {
       return;
     }
 
-    const host = getRequestHost(req).split(":")[0];
+    const authority = getRequestAuthority(req);
+    const host = normalizeRequestHostname(authority);
     if (!host) {
       res.writeHead(400, { "content-type": "text/plain" });
       res.end("Missing Host header.");
@@ -108,8 +135,8 @@ export function createProxyServers(options: {
       return;
     }
 
-    const headers: http.OutgoingHttpHeaders = { ...req.headers, ...buildForwardedHeaders(req, httpsRequest) };
-    headers.host = getRequestHost(req);
+    const headers: http.OutgoingHttpHeaders = { ...req.headers, ...buildForwardedHeaders(req, authority, httpsRequest) };
+    headers.host = authority;
     for (const key of Object.keys(headers)) {
       if (key.startsWith(":")) {
         delete headers[key];
@@ -165,15 +192,16 @@ export function createProxyServers(options: {
   const handleUpgrade = (httpsRequest: boolean) => (req: http.IncomingMessage, socket: net.Socket, head: Buffer) => {
     socket.on("error", () => socket.destroy());
 
-    const host = getRequestHost(req).split(":")[0];
+    const authority = getRequestAuthority(req);
+    const host = normalizeRequestHostname(authority);
     const route = findRoute(options.getRoutes(), host);
     if (!route) {
       socket.destroy();
       return;
     }
 
-    const headers: http.OutgoingHttpHeaders = { ...req.headers, ...buildForwardedHeaders(req, httpsRequest) };
-    headers.host = getRequestHost(req);
+    const headers: http.OutgoingHttpHeaders = { ...req.headers, ...buildForwardedHeaders(req, authority, httpsRequest) };
+    headers.host = authority;
     for (const key of Object.keys(headers)) {
       if (key.startsWith(":")) {
         delete headers[key];

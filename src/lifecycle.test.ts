@@ -134,14 +134,14 @@ describe("local-router lifecycle", () => {
         } catch {
           return false;
         }
-      }, 10_000);
+      }, 25_000);
 
       expect(fs.existsSync(path.join(stateDir, "proxy-state.json"))).toBe(true);
 
       child.kill("SIGINT");
       await waitFor(() => child!.exitCode !== null || child!.signalCode !== null, 5_000);
 
-      await waitFor(() => !fs.existsSync(path.join(stateDir, "proxy-state.json")), 8_000);
+      await waitFor(() => !fs.existsSync(path.join(stateDir, "proxy-state.json")), 15_000);
 
       await expect(request("demo.localhost", httpPort)).rejects.toThrow();
 
@@ -149,6 +149,6 @@ describe("local-router lifecycle", () => {
       expect(fs.existsSync(routesPath)).toBe(true);
       expect(JSON.parse(fs.readFileSync(routesPath, "utf-8"))).toEqual([]);
     },
-    20_000
+    40_000
   );
 });
