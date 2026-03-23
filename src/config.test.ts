@@ -20,6 +20,15 @@ describe("config discovery", () => {
     expect(findLocalRouterConfig(child)).toBe(path.join(root, ".local-router"));
   });
 
+  it("ignores a .local-router directory and keeps searching", () => {
+    const root = path.join(fixtureDir, "app");
+    const child = path.join(root, "src");
+    fs.mkdirSync(path.join(child, ".local-router"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".local-router.json"), `{ name: "algo" }`);
+
+    expect(findLocalRouterConfig(child)).toBe(path.join(root, ".local-router.json"));
+  });
+
   it("loads JSON5 config", () => {
     fs.writeFileSync(
       path.join(fixtureDir, ".local-router"),

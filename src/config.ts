@@ -12,13 +12,21 @@ export interface LoadedConfig {
   path: string;
 }
 
+function isReadableFile(candidate: string): boolean {
+  try {
+    return fs.statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
 export function findLocalRouterConfig(cwd: string = process.cwd()): string | null {
   let dir = cwd;
 
   for (;;) {
     for (const filename of CONFIG_FILENAMES) {
       const candidate = path.join(dir, filename);
-      if (fs.existsSync(candidate)) {
+      if (isReadableFile(candidate)) {
         return candidate;
       }
     }
