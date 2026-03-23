@@ -1,0 +1,28 @@
+changelog:
+  exclude:
+    labels:
+      - skip-release-notes
+    authors:
+      - dependabot
+      - dependabot[bot]
+  categories:
+    - title: Features
+      labels:
+        - feat
+        - feature
+        - enhancement
+    - title: Fixes
+      labels:
+        - fix
+        - bug
+        - bugfix
+    - title: Maintenance
+      labels:
+        - chore
+        - ci
+        - docs
+        - refactor
+        - test
+    - title: Other Changes
+      labels:
+        - "*"
