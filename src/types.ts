@@ -14,10 +14,12 @@ export interface ProxyRuntimeConfig {
   httpsPort: number;
   httpEnabled: boolean;
   httpsEnabled: boolean;
+  autoStopWhenIdle?: boolean;
 }
 
 export interface ProxyState extends ProxyRuntimeConfig {
   pid: number;
+  autoStopWhenIdle?: boolean;
 }
 
 export interface LocalRouterConfig {

@@ -4,6 +4,7 @@ import chalk from "chalk";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { createSNICallback, ensureCerts, isCATrusted, trustCA } from "./certs.js";
 import { resolveProjectHosts } from "./config.js";
 import { cleanHostsFile, syncHostsFile } from "./hosts.js";
@@ -38,6 +39,8 @@ const DEBOUNCE_MS = 100;
 const POLL_INTERVAL_MS = 3000;
 const EXIT_TIMEOUT_MS = 2000;
 const START_TIMEOUT_MS = 30_000;
+const AUTO_STOP_IDLE_MS = 3000;
+const CLI_ENTRY_PATH = fileURLToPath(import.meta.url);
 
 interface RunOptions {
   force: boolean;
@@ -49,6 +52,29 @@ interface RunOptions {
 
 interface ProxyOptions extends ProxyRuntimeConfig {
   foreground: boolean;
+  autoStopWhenIdle: boolean;
+}
+
+function getSelfInvocation(args: string[]): { command: string; args: string[] } {
+  if (CLI_ENTRY_PATH.endsWith(".ts")) {
+    const projectRoot = path.dirname(path.dirname(CLI_ENTRY_PATH));
+    const tsxBin = path.join(
+      projectRoot,
+      "node_modules",
+      ".bin",
+      isWindows ? "tsx.cmd" : "tsx"
+    );
+
+    return {
+      command: tsxBin,
+      args: [CLI_ENTRY_PATH, ...args],
+    };
+  }
+
+  return {
+    command: process.execPath,
+    args: [CLI_ENTRY_PATH, ...args],
+  };
 }
 
 function printHelp(): void {
@@ -196,6 +222,7 @@ function parseProxyArgs(args: string[]): ProxyOptions {
     httpEnabled: true,
     httpsEnabled: true,
     foreground: false,
+    autoStopWhenIdle: false,
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -203,6 +230,11 @@ function parseProxyArgs(args: string[]): ProxyOptions {
 
     if (token === "--foreground") {
       options.foreground = true;
+      continue;
+    }
+
+    if (token === "--auto-stop-when-idle") {
+      options.autoStopWhenIdle = true;
       continue;
     }
 
@@ -346,6 +378,18 @@ function writeEmptyRoutesIfNeeded(store: RouteStore): void {
   }
 }
 
+function syncHostsFromStore(store: RouteStore): void {
+  const activeRoutes = store.loadRoutes(true);
+  const hostnames = activeRoutes.map((route) => route.hostname);
+
+  if (hostnames.length === 0) {
+    cleanHostsFile();
+    return;
+  }
+
+  syncHostsFile(hostnames);
+}
+
 function needsPrivileges(runtime: ProxyRuntimeConfig): boolean {
   if (isWindows) return false;
 
@@ -355,19 +399,45 @@ function needsPrivileges(runtime: ProxyRuntimeConfig): boolean {
   );
 }
 
-function startProxyServer(store: RouteStore, runtime: ProxyRuntimeConfig, stateDir: string): void {
+function startProxyServer(store: RouteStore, runtime: ProxyOptions, stateDir: string): void {
   store.ensureDir();
   writeEmptyRoutesIfNeeded(store);
 
-  let cachedRoutes = store.loadRoutes();
+  let cachedRoutes = store.loadRoutes(true);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let watcher: fs.FSWatcher | null = null;
   let poller: ReturnType<typeof setInterval> | null = null;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let cleaningUp = false;
+
+  const clearIdleTimer = () => {
+    if (!idleTimer) return;
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  };
+
+  const scheduleIdleShutdown = () => {
+    if (!runtime.autoStopWhenIdle || idleTimer || cachedRoutes.length > 0) return;
+
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      cachedRoutes = store.loadRoutes(true);
+      if (cachedRoutes.length === 0) {
+        cleanup();
+      }
+    }, AUTO_STOP_IDLE_MS);
+    idleTimer.unref();
+  };
 
   const reloadRoutes = () => {
     try {
-      cachedRoutes = store.loadRoutes();
-      syncHostsFile(cachedRoutes.map((route) => route.hostname));
+      cachedRoutes = store.loadRoutes(true);
+      syncHostsFromStore(store);
+      if (cachedRoutes.length > 0) {
+        clearIdleTimer();
+      } else {
+        scheduleIdleShutdown();
+      }
     } catch {
       // Keep the previous cache if the file is mid-write.
     }
@@ -379,10 +449,14 @@ function startProxyServer(store: RouteStore, runtime: ProxyRuntimeConfig, stateD
       debounceTimer = setTimeout(reloadRoutes, DEBOUNCE_MS);
     });
   } catch {
-    poller = setInterval(reloadRoutes, POLL_INTERVAL_MS);
+    // Fall back to interval-only housekeeping below.
   }
 
-  syncHostsFile(cachedRoutes.map((route) => route.hostname));
+  poller = setInterval(reloadRoutes, POLL_INTERVAL_MS);
+  poller.unref();
+
+  syncHostsFromStore(store);
+  scheduleIdleShutdown();
 
   let tlsOptions: ProxyTlsOptions | undefined;
   if (runtime.httpsEnabled) {
@@ -420,7 +494,14 @@ function startProxyServer(store: RouteStore, runtime: ProxyRuntimeConfig, stateD
     if (pendingListeners > 0) return;
 
     fs.writeFileSync(store.pidPath, String(process.pid), { mode: FILE_MODE });
-    writeProxyState(stateDir, { pid: process.pid, ...runtime });
+    writeProxyState(stateDir, {
+      pid: process.pid,
+      httpPort: runtime.httpPort,
+      httpsPort: runtime.httpsPort,
+      httpEnabled: runtime.httpEnabled,
+      httpsEnabled: runtime.httpsEnabled,
+      autoStopWhenIdle: runtime.autoStopWhenIdle,
+    });
     fixOwnership(store.pidPath, store.statePath);
 
     console.log(chalk.green("local-router proxy is listening."));
@@ -457,8 +538,12 @@ function startProxyServer(store: RouteStore, runtime: ProxyRuntimeConfig, stateD
   }
 
   const cleanup = () => {
+    if (cleaningUp) return;
+    cleaningUp = true;
+
     if (debounceTimer) clearTimeout(debounceTimer);
     if (poller) clearInterval(poller);
+    clearIdleTimer();
     watcher?.close();
 
     try {
@@ -491,6 +576,7 @@ async function ensureProxy(runtime: ProxyRuntimeConfig): Promise<{ dir: string; 
   const effectiveState = state ?? {
     pid: 0,
     ...runtime,
+    autoStopWhenIdle: true,
   };
 
   const stateDir = resolveStateDir(runtime);
@@ -519,13 +605,14 @@ async function ensureProxy(runtime: ProxyRuntimeConfig): Promise<{ dir: string; 
       throw new Error("Skipping the proxy is not supported for this command.");
     }
 
-    const childArgs = [process.execPath, process.argv[1], "proxy", "start"];
+    const invocation = getSelfInvocation(["proxy", "start"]);
+    const childArgs = [...invocation.args, "--auto-stop-when-idle"];
     if (!runtime.httpEnabled) childArgs.push("--no-http");
     if (!runtime.httpsEnabled) childArgs.push("--no-https");
     if (runtime.httpPort !== getDefaultHttpPort()) childArgs.push("--http-port", String(runtime.httpPort));
     if (runtime.httpsPort !== getDefaultHttpsPort()) childArgs.push("--https-port", String(runtime.httpsPort));
 
-    const result = spawnSync("sudo", childArgs, {
+    const result = spawnSync("sudo", [invocation.command, ...childArgs], {
       stdio: "inherit",
       timeout: START_TIMEOUT_MS,
     });
@@ -535,13 +622,14 @@ async function ensureProxy(runtime: ProxyRuntimeConfig): Promise<{ dir: string; 
       process.exit(1);
     }
   } else {
-    const childArgs = [process.argv[1], "proxy", "start"];
+    const invocation = getSelfInvocation(["proxy", "start"]);
+    const childArgs = [...invocation.args, "--auto-stop-when-idle"];
     if (!runtime.httpEnabled) childArgs.push("--no-http");
     if (!runtime.httpsEnabled) childArgs.push("--no-https");
     if (runtime.httpPort !== getDefaultHttpPort()) childArgs.push("--http-port", String(runtime.httpPort));
     if (runtime.httpsPort !== getDefaultHttpsPort()) childArgs.push("--https-port", String(runtime.httpsPort));
 
-    const result = spawnSync(process.execPath, childArgs, {
+    const result = spawnSync(invocation.command, childArgs, {
       stdio: "inherit",
       timeout: START_TIMEOUT_MS,
     });
@@ -596,6 +684,22 @@ async function handleRun(args: string[]): Promise<void> {
     onWarning: (message) => console.warn(chalk.yellow(message)),
   });
 
+  const cleanupRoutes = () => {
+    for (const hostname of resolved.hostnames) {
+      try {
+        store.removeRoute(hostname);
+      } catch {
+        // Non-fatal on cleanup.
+      }
+    }
+
+    try {
+      syncHostsFromStore(store);
+    } catch {
+      // Best effort if hosts cannot be updated here.
+    }
+  };
+
   const port = parsed.appPort ?? (await findFreePort());
   console.log(chalk.green(`App port: ${port}`));
 
@@ -632,15 +736,7 @@ async function handleRun(args: string[]): Promise<void> {
       LOCAL_ROUTER_URLS_HTTP: allHttpUrls,
       __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: ".localhost",
     },
-    onCleanup: () => {
-      for (const hostname of resolved.hostnames) {
-        try {
-          store.removeRoute(hostname);
-        } catch {
-          // Non-fatal on cleanup.
-        }
-      }
-    },
+    onCleanup: cleanupRoutes,
   });
 }
 
@@ -736,13 +832,15 @@ ${chalk.bold("Usage:")}
     }
     fixOwnership(logPath, stateDir);
 
-    const daemonArgs = [process.argv[1], "proxy", "start", "--foreground"];
+    const invocation = getSelfInvocation(["proxy", "start", "--foreground"]);
+    const daemonArgs = [...invocation.args];
+    if (options.autoStopWhenIdle) daemonArgs.push("--auto-stop-when-idle");
     if (!options.httpEnabled) daemonArgs.push("--no-http");
     if (!options.httpsEnabled) daemonArgs.push("--no-https");
     if (options.httpPort !== getDefaultHttpPort()) daemonArgs.push("--http-port", String(options.httpPort));
     if (options.httpsPort !== getDefaultHttpsPort()) daemonArgs.push("--https-port", String(options.httpsPort));
 
-    const child = spawn(process.execPath, daemonArgs, {
+    const child = spawn(invocation.command, daemonArgs, {
       detached: true,
       stdio: ["ignore", logFd, logFd],
       env: process.env,

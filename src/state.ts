@@ -233,6 +233,9 @@ export function spawnCommand(
   const cleanup = () => {
     process.removeListener("SIGINT", onSigInt);
     process.removeListener("SIGTERM", onSigTerm);
+    process.removeListener("SIGHUP", onSigHup);
+    process.removeListener("uncaughtException", onUncaughtException);
+    process.removeListener("unhandledRejection", onUnhandledRejection);
     options?.onCleanup?.();
   };
 
@@ -246,8 +249,28 @@ export function spawnCommand(
 
   const onSigInt = () => handleSignal("SIGINT");
   const onSigTerm = () => handleSignal("SIGTERM");
+  const onSigHup = () => handleSignal("SIGHUP");
+  const onUncaughtException = (error: Error) => {
+    if (exiting) return;
+    exiting = true;
+    console.error(error.stack || error.message);
+    child.kill("SIGTERM");
+    cleanup();
+    process.exit(1);
+  };
+  const onUnhandledRejection = (reason: unknown) => {
+    if (exiting) return;
+    exiting = true;
+    console.error(reason instanceof Error ? reason.stack || reason.message : String(reason));
+    child.kill("SIGTERM");
+    cleanup();
+    process.exit(1);
+  };
   process.on("SIGINT", onSigInt);
   process.on("SIGTERM", onSigTerm);
+  process.on("SIGHUP", onSigHup);
+  process.on("uncaughtException", onUncaughtException);
+  process.on("unhandledRejection", onUnhandledRejection);
 
   child.on("error", (error) => {
     if (exiting) return;
