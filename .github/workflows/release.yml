@@ -52,7 +52,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Create GitHub releases with generated notes
+      - name: Create GitHub release with generated notes
         if: steps.changesets.outputs.published == 'true'
         uses: actions/github-script@v7
         env:
@@ -82,7 +82,6 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 tag_name: tag,
-                target_commitish: context.sha,
                 name: tag,
                 generate_release_notes: true,
                 prerelease: pkg.version.includes("-"),
