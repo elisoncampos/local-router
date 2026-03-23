@@ -1,0 +1,104 @@
+#!/bin/sh
+
+set -eu
+
+SOURCE="$0"
+
+while [ -h "$SOURCE" ]; do
+  DIR=$(CDPATH= cd -- "$(dirname -- "$SOURCE")" && pwd)
+  TARGET=$(readlink "$SOURCE")
+  case "$TARGET" in
+    /*) SOURCE="$TARGET" ;;
+    *) SOURCE="$DIR/$TARGET" ;;
+  esac
+done
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SOURCE")" && pwd)
+PACKAGE_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+INSTALLED_NODE_PATH_FILE="$PACKAGE_ROOT/bin/.installed-node-path"
+
+PRIMARY_NODE="$(command -v node 2>/dev/null || true)"
+
+can_run_node() {
+  CANDIDATE="$1"
+  [ -n "$CANDIDATE" ] || return 1
+  [ -x "$CANDIDATE" ] || return 1
+  "$CANDIDATE" -e "process.exit(0)" >/dev/null 2>&1
+}
+
+find_fallback_node() {
+  OLD_IFS=$IFS
+  IFS=:
+  for DIR in $PATH; do
+    [ -n "$DIR" ] || continue
+    CANDIDATE="$DIR/node"
+    [ -x "$CANDIDATE" ] || continue
+
+    if [ -n "$PRIMARY_NODE" ] && [ "$CANDIDATE" = "$PRIMARY_NODE" ]; then
+      continue
+    fi
+
+    case "$CANDIDATE" in
+      */.asdf/shims/node|*/asdf/shims/node|*/.mise/shims/node|*/mise/shims/node)
+        continue
+        ;;
+    esac
+
+    if can_run_node "$CANDIDATE"; then
+      printf '%s\n' "$CANDIDATE"
+      IFS=$OLD_IFS
+      return 0
+    fi
+  done
+  IFS=$OLD_IFS
+  return 1
+}
+
+SELECTED_NODE=""
+USED_FALLBACK="0"
+
+if [ -n "$PRIMARY_NODE" ] && can_run_node "$PRIMARY_NODE"; then
+  SELECTED_NODE="$PRIMARY_NODE"
+else
+  if [ -f "$INSTALLED_NODE_PATH_FILE" ]; then
+    INSTALLED_NODE="$(tr -d '\r\n' < "$INSTALLED_NODE_PATH_FILE")"
+    if can_run_node "$INSTALLED_NODE"; then
+      SELECTED_NODE="$INSTALLED_NODE"
+    fi
+  fi
+
+  if [ -z "$SELECTED_NODE" ]; then
+    SELECTED_NODE="$(find_fallback_node || true)"
+  fi
+
+  if [ -n "$SELECTED_NODE" ]; then
+    USED_FALLBACK="1"
+  fi
+fi
+
+if [ -z "$SELECTED_NODE" ]; then
+  echo "local-router: could not find a working Node.js runtime." >&2
+  echo "local-router: install the project's Node version or make a global node available in PATH." >&2
+  exit 1
+fi
+
+CLI_JS="$PACKAGE_ROOT/dist/cli.js"
+TSX_CLI="$PACKAGE_ROOT/node_modules/tsx/dist/cli.mjs"
+CLI_TS="$PACKAGE_ROOT/src/cli.ts"
+
+if [ -f "$CLI_JS" ]; then
+  exec env \
+    LOCAL_ROUTER_NODE_BIN="$SELECTED_NODE" \
+    LOCAL_ROUTER_NODE_FALLBACK="$USED_FALLBACK" \
+    "$SELECTED_NODE" "$CLI_JS" "$@"
+fi
+
+if [ -f "$TSX_CLI" ] && [ -f "$CLI_TS" ]; then
+  exec env \
+    LOCAL_ROUTER_NODE_BIN="$SELECTED_NODE" \
+    LOCAL_ROUTER_NODE_FALLBACK="$USED_FALLBACK" \
+    "$SELECTED_NODE" "$TSX_CLI" "$CLI_TS" "$@"
+fi
+
+echo "local-router: CLI entrypoint not found. Build the project first." >&2
+exit 1

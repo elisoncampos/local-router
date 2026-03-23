@@ -55,6 +55,22 @@ interface ProxyOptions extends ProxyRuntimeConfig {
   autoStopWhenIdle: boolean;
 }
 
+function maybeWarnAboutNodeFallback(): void {
+  if (process.env.LOCAL_ROUTER_NODE_FALLBACK !== "1") return;
+
+  const fallbackNode = process.env.LOCAL_ROUTER_NODE_BIN;
+  if (!fallbackNode) return;
+
+  console.warn(
+    chalk.yellow(
+      `Warning: the project-local Node.js runtime was not available. Falling back to ${fallbackNode}.`
+    )
+  );
+  console.warn(
+    chalk.gray("Install the project's Node version in asdf, mise, nvm, or your preferred manager.\n")
+  );
+}
+
 function getSelfInvocation(args: string[]): { command: string; args: string[] } {
   if (CLI_ENTRY_PATH.endsWith(".ts")) {
     const projectRoot = path.dirname(path.dirname(CLI_ENTRY_PATH));
@@ -872,6 +888,8 @@ async function handleTrust(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  maybeWarnAboutNodeFallback();
+
   const args = process.argv.slice(2);
   const command = args[0];
 
