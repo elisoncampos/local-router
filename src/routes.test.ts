@@ -13,13 +13,18 @@ beforeEach(() => {
 describe("RouteStore", () => {
   it("persists and loads routes", () => {
     const store = new RouteStore(tempDir);
-    store.addRoute("algo.localhost", 4011, process.pid);
+    store.addRoute("algo.localhost", 4011, process.pid, false, {
+      appName: "algo",
+      command: "npm run dev",
+    });
 
     expect(store.loadRoutes()).toEqual([
       {
         hostname: "algo.localhost",
         port: 4011,
         pid: process.pid,
+        appName: "algo",
+        command: "npm run dev",
       },
     ]);
   });

@@ -3,6 +3,8 @@ import type { SecureContext } from "node:tls";
 export interface RouteInfo {
   hostname: string;
   port: number;
+  appName?: string;
+  command?: string;
 }
 
 export interface RouteMapping extends RouteInfo {

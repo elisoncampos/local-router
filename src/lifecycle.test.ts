@@ -85,6 +85,7 @@ let fixtureDir: string;
 let appDir: string;
 let stateDir: string;
 let child: ChildProcess | undefined;
+let proxyChild: ChildProcess | undefined;
 
 beforeEach(() => {
   fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "local-router-lifecycle-test-"));
@@ -108,9 +109,43 @@ afterEach(async () => {
   if (child && child.exitCode === null && child.signalCode === null) {
     child.kill("SIGTERM");
   }
+  if (proxyChild && proxyChild.exitCode === null && proxyChild.signalCode === null) {
+    proxyChild.kill("SIGTERM");
+  }
 });
 
 describe("local-router lifecycle", () => {
+  it(
+    "starts a localhost-only proxy on unprivileged ports without prompting for sudo",
+    async () => {
+      fs.writeFileSync(path.join(appDir, ".local-router"), `{ name: "demo" }`);
+
+      child = spawn(TSX_CLI, [CLI_PATH, "run", "node", "server.cjs"], {
+        cwd: appDir,
+        env: {
+          ...process.env,
+          LOCAL_ROUTER_STATE_DIR: stateDir,
+        },
+        stdio: "ignore",
+      });
+
+      await waitFor(async () => {
+        try {
+          return (await request("demo.localhost", 18080)) === "ok";
+        } catch {
+          return false;
+        }
+      }, 25_000);
+
+      const proxyState = JSON.parse(
+        fs.readFileSync(path.join(stateDir, "proxy-state.json"), "utf-8")
+      ) as { httpPort: number; httpsPort: number };
+      expect(proxyState.httpPort).toBe(18080);
+      expect(proxyState.httpsPort).toBe(18443);
+    },
+    40_000
+  );
+
   it(
     "stops the auto-started proxy after the run process exits",
     async () => {
@@ -150,5 +185,54 @@ describe("local-router lifecycle", () => {
       expect(JSON.parse(fs.readFileSync(routesPath, "utf-8"))).toEqual([]);
     },
     40_000
+  );
+
+  it(
+    "stops a reused keep-alive proxy after the last proxied app exits",
+    async () => {
+      const httpPort = await getFreePort();
+      const httpsPort = await getFreePort();
+
+      proxyChild = spawn(TSX_CLI, [CLI_PATH, "proxy", "start", "--foreground", "--keep-alive"], {
+        cwd: appDir,
+        env: {
+          ...process.env,
+          LOCAL_ROUTER_STATE_DIR: stateDir,
+          LOCAL_ROUTER_HTTP_PORT: String(httpPort),
+          LOCAL_ROUTER_HTTPS_PORT: String(httpsPort),
+        },
+        stdio: "ignore",
+      });
+
+      await waitFor(() => fs.existsSync(path.join(stateDir, "proxy-state.json")), 15_000);
+
+      child = spawn(TSX_CLI, [CLI_PATH, "run", "node", "server.cjs"], {
+        cwd: appDir,
+        env: {
+          ...process.env,
+          LOCAL_ROUTER_STATE_DIR: stateDir,
+          LOCAL_ROUTER_HTTP_PORT: String(httpPort),
+          LOCAL_ROUTER_HTTPS_PORT: String(httpsPort),
+        },
+        stdio: "ignore",
+      });
+
+      await waitFor(async () => {
+        try {
+          return (await request("demo.localhost", httpPort)) === "ok";
+        } catch {
+          return false;
+        }
+      }, 25_000);
+
+      child.kill("SIGINT");
+      await waitFor(() => child!.exitCode !== null || child!.signalCode !== null, 10_000);
+
+      await waitFor(() => !fs.existsSync(path.join(stateDir, "proxy-state.json")), 15_000);
+      await waitFor(() => proxyChild!.exitCode !== null || proxyChild!.signalCode !== null, 10_000);
+
+      await expect(request("demo.localhost", httpPort)).rejects.toThrow();
+    },
+    50_000
   );
 });

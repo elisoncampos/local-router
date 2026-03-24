@@ -32,7 +32,9 @@ function isValidRoute(value: unknown): value is RouteMapping {
     value !== null &&
     typeof (value as RouteMapping).hostname === "string" &&
     typeof (value as RouteMapping).port === "number" &&
-    typeof (value as RouteMapping).pid === "number"
+    typeof (value as RouteMapping).pid === "number" &&
+    ((value as RouteMapping).appName === undefined || typeof (value as RouteMapping).appName === "string") &&
+    ((value as RouteMapping).command === undefined || typeof (value as RouteMapping).command === "string")
   );
 }
 
@@ -173,7 +175,13 @@ export class RouteStore {
     fixOwnership(this.routesPath);
   }
 
-  addRoute(hostname: string, port: number, pid: number, force = false): void {
+  addRoute(
+    hostname: string,
+    port: number,
+    pid: number,
+    force = false,
+    metadata?: { appName?: string; command?: string }
+  ): void {
     const normalizedHostname = normalizeExplicitHostname(hostname);
     this.ensureDir();
     if (!this.acquireLock()) {
@@ -188,7 +196,13 @@ export class RouteStore {
       }
 
       const nextRoutes = routes.filter((route) => route.hostname !== normalizedHostname);
-      nextRoutes.push({ hostname: normalizedHostname, port, pid });
+      nextRoutes.push({
+        hostname: normalizedHostname,
+        port,
+        pid,
+        ...(metadata?.appName ? { appName: metadata.appName } : {}),
+        ...(metadata?.command ? { command: metadata.command } : {}),
+      });
       this.saveRoutes(nextRoutes);
     } finally {
       this.releaseLock();

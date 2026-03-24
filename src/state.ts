@@ -63,6 +63,27 @@ function readProxyState(dir: string): ProxyState | null {
   }
 }
 
+function getKnownStateDirsInternal(): string[] {
+  if (process.env.LOCAL_ROUTER_STATE_DIR) {
+    return [process.env.LOCAL_ROUTER_STATE_DIR];
+  }
+
+  return [USER_STATE_DIR, SYSTEM_STATE_DIR];
+}
+
+function stateMatchesRuntime(state: ProxyState, runtime: ProxyRuntimeConfig): boolean {
+  return (
+    state.httpPort === runtime.httpPort &&
+    state.httpsPort === runtime.httpsPort &&
+    state.httpEnabled === runtime.httpEnabled &&
+    state.httpsEnabled === runtime.httpsEnabled
+  );
+}
+
+export function getKnownStateDirs(): string[] {
+  return Array.from(new Set(getKnownStateDirsInternal()));
+}
+
 export function writeProxyState(dir: string, state: ProxyState): void {
   fs.writeFileSync(path.join(dir, "proxy-state.json"), JSON.stringify(state, null, 2), { mode: 0o644 });
 }
@@ -144,6 +165,36 @@ export async function discoverState(): Promise<{ dir: string; state: ProxyState 
   return { dir: resolveStateDir(fallback), state: null };
 }
 
+export async function discoverStateForRuntime(
+  runtime: ProxyRuntimeConfig
+): Promise<{ dir: string; state: ProxyState | null }> {
+  for (const dir of getKnownStateDirsInternal()) {
+    const state = readProxyState(dir);
+    if (!state || !stateMatchesRuntime(state, runtime)) continue;
+
+    if (await isProxyRunning(state)) {
+      return { dir, state };
+    }
+  }
+
+  return { dir: resolveStateDir(runtime), state: null };
+}
+
+export async function listRunningStates(): Promise<Array<{ dir: string; state: ProxyState }>> {
+  const states: Array<{ dir: string; state: ProxyState }> = [];
+
+  for (const dir of getKnownStateDirsInternal()) {
+    const state = readProxyState(dir);
+    if (!state) continue;
+
+    if (await isProxyRunning(state)) {
+      states.push({ dir, state });
+    }
+  }
+
+  return states;
+}
+
 export async function waitForProxy(runtime: ProxyRuntimeConfig): Promise<boolean> {
   for (let attempt = 0; attempt < WAIT_FOR_PROXY_MAX_ATTEMPTS; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, WAIT_FOR_PROXY_INTERVAL_MS));
@@ -204,10 +255,6 @@ function augmentedPath(env: NodeJS.ProcessEnv | undefined): string {
   return [...collectBinPaths(process.cwd()), nodeBin, basePath].join(path.delimiter);
 }
 
-function shellEscape(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
 export function spawnCommand(
   commandArgs: string[],
   options?: {
@@ -216,17 +263,24 @@ export function spawnCommand(
   }
 ): void {
   const env = { ...(options?.env ?? process.env), PATH: augmentedPath(options?.env) };
+  const commandText = commandArgs.join(" ").trim();
+  const runThroughShell = commandArgs.length === 1 && /\s/.test(commandArgs[0]);
 
   const child = isWindows
-    ? spawn(commandArgs[0], commandArgs.slice(1), {
+    ? spawn(runThroughShell ? commandText : commandArgs[0], runThroughShell ? [] : commandArgs.slice(1), {
         stdio: "inherit",
         env,
         shell: true,
       })
-    : spawn("/bin/sh", ["-c", commandArgs.map(shellEscape).join(" ")], {
-        stdio: "inherit",
-        env,
-      });
+    : runThroughShell
+      ? spawn("/bin/sh", ["-lc", commandArgs[0]], {
+          stdio: "inherit",
+          env,
+        })
+      : spawn(commandArgs[0], commandArgs.slice(1), {
+          stdio: "inherit",
+          env,
+        });
 
   let exiting = false;
 
