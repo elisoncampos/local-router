@@ -1,5 +1,11 @@
 # @elisoncampos/local-router
 
+## 0.3.0
+
+### Minor Changes
+
+- [`26b2467`](https://github.com/elisoncampos/local-router/commit/26b2467fe074c11c19475f32759b2f80362f6b48) Thanks [@elisoncampos](https://github.com/elisoncampos)! - Adding a command to show all proxied services, some fixes in cleanup
+
 ## 0.2.1
 
 ### Patch Changes
