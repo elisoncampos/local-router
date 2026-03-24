@@ -34,7 +34,8 @@ function isValidRoute(value: unknown): value is RouteMapping {
     typeof (value as RouteMapping).port === "number" &&
     typeof (value as RouteMapping).pid === "number" &&
     ((value as RouteMapping).appName === undefined || typeof (value as RouteMapping).appName === "string") &&
-    ((value as RouteMapping).command === undefined || typeof (value as RouteMapping).command === "string")
+    ((value as RouteMapping).command === undefined || typeof (value as RouteMapping).command === "string") &&
+    ((value as RouteMapping).cwd === undefined || typeof (value as RouteMapping).cwd === "string")
   );
 }
 
@@ -180,7 +181,7 @@ export class RouteStore {
     port: number,
     pid: number,
     force = false,
-    metadata?: { appName?: string; command?: string }
+    metadata?: { appName?: string; command?: string; cwd?: string }
   ): void {
     const normalizedHostname = normalizeExplicitHostname(hostname);
     this.ensureDir();
@@ -202,6 +203,7 @@ export class RouteStore {
         pid,
         ...(metadata?.appName ? { appName: metadata.appName } : {}),
         ...(metadata?.command ? { command: metadata.command } : {}),
+        ...(metadata?.cwd ? { cwd: metadata.cwd } : {}),
       });
       this.saveRoutes(nextRoutes);
     } finally {

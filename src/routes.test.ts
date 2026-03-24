@@ -16,6 +16,7 @@ describe("RouteStore", () => {
     store.addRoute("algo.localhost", 4011, process.pid, false, {
       appName: "algo",
       command: "npm run dev",
+      cwd: "/tmp/algo",
     });
 
     expect(store.loadRoutes()).toEqual([
@@ -25,6 +26,7 @@ describe("RouteStore", () => {
         pid: process.pid,
         appName: "algo",
         command: "npm run dev",
+        cwd: "/tmp/algo",
       },
     ]);
   });

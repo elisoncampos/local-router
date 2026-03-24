@@ -3,11 +3,12 @@
 import chalk from "chalk";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createSNICallback, ensureCerts, isCATrusted, trustCA } from "./certs.js";
 import { resolveProjectHosts } from "./config.js";
 import { cleanHostsFile, syncHostsFile } from "./hosts.js";
+import { extractChildCommandFromProcessCommand } from "./process-info.js";
 import { createProxyServers } from "./proxy.js";
 import { DIR_MODE, FILE_MODE, RouteConflictError, RouteStore } from "./routes.js";
 import {
@@ -448,6 +449,68 @@ function formatCommand(commandArgs: string[]): string {
   return commandArgs.join(" ").trim();
 }
 
+function readProcessCommand(pid: number): string | undefined {
+  if (isWindows) return undefined;
+
+  try {
+    const rawCommand = execFileSync("ps", ["-o", "command=", "-p", String(pid)], {
+      encoding: "utf-8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (!rawCommand) return undefined;
+
+    return extractChildCommandFromProcessCommand(rawCommand) ?? rawCommand;
+  } catch {
+    return undefined;
+  }
+}
+
+function readProcessCwd(pid: number): string | undefined {
+  if (isWindows) return undefined;
+
+  const procCwdPath = path.join("/proc", String(pid), "cwd");
+  try {
+    if (fs.existsSync(procCwdPath)) {
+      return fs.realpathSync(procCwdPath);
+    }
+  } catch {
+    // Fall through to lsof.
+  }
+
+  try {
+    const output = execFileSync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], {
+      encoding: "utf-8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const line = output
+      .split(/\r?\n/)
+      .find((entry) => entry.startsWith("n") && entry.length > 1);
+    return line ? line.slice(1).trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveRouteDisplayInfo(route: RouteMapping): {
+  appName: string;
+  command: string;
+  projectFolder: string;
+} {
+  const projectFolder = route.cwd ?? readProcessCwd(route.pid) ?? "-";
+  const command = route.command ?? readProcessCommand(route.pid) ?? "-";
+  const appName =
+    route.appName ??
+    (projectFolder !== "-" ? path.basename(projectFolder) : inferAppName(route));
+
+  return {
+    appName,
+    command,
+    projectFolder,
+  };
+}
+
 function inferAppName(route: RouteMapping): string {
   if (route.appName) return route.appName;
   if (route.hostname.endsWith(".localhost")) {
@@ -468,13 +531,12 @@ function printRouteTable(routes: RouteMapping[]): void {
 
   const grouped = new Map<
     string,
-    { appName: string; port: number; command: string; hostnames: string[] }
+    { appName: string; port: number; command: string; projectFolder: string; hostnames: string[] }
   >();
 
   for (const route of routes) {
-    const appName = inferAppName(route);
-    const command = route.command ?? "-";
-    const key = `${route.pid}:${route.port}:${appName}:${command}`;
+    const display = resolveRouteDisplayInfo(route);
+    const key = `${route.pid}:${route.port}:${display.appName}:${display.command}:${display.projectFolder}`;
     const existing = grouped.get(key);
 
     if (existing) {
@@ -483,9 +545,10 @@ function printRouteTable(routes: RouteMapping[]): void {
     }
 
     grouped.set(key, {
-      appName,
+      appName: display.appName,
       port: route.port,
-      command,
+      command: display.command,
+      projectFolder: display.projectFolder,
       hostnames: [route.hostname],
     });
   }
@@ -501,6 +564,7 @@ function printRouteTable(routes: RouteMapping[]): void {
           return left.localeCompare(right);
         })
         .join(", "),
+      projectFolder: row.projectFolder,
       command: row.command,
     }))
     .sort((left, right) => left.appName.localeCompare(right.appName));
@@ -509,6 +573,7 @@ function printRouteTable(routes: RouteMapping[]): void {
     appName: "APP",
     port: "PORT",
     domains: "DOMAINS",
+    projectFolder: "PROJECT FOLDER",
     command: "CMD",
   };
 
@@ -516,6 +581,7 @@ function printRouteTable(routes: RouteMapping[]): void {
     appName: Math.max(headers.appName.length, ...rows.map((row) => row.appName.length)),
     port: Math.max(headers.port.length, ...rows.map((row) => row.port.length)),
     domains: Math.max(headers.domains.length, ...rows.map((row) => row.domains.length)),
+    projectFolder: Math.max(headers.projectFolder.length, ...rows.map((row) => row.projectFolder.length)),
     command: Math.max(headers.command.length, ...rows.map((row) => row.command.length)),
   };
 
@@ -523,6 +589,7 @@ function printRouteTable(routes: RouteMapping[]): void {
     "-".repeat(widths.appName),
     "-".repeat(widths.port),
     "-".repeat(widths.domains),
+    "-".repeat(widths.projectFolder),
     "-".repeat(widths.command),
   ].join("-+-");
 
@@ -532,6 +599,7 @@ function printRouteTable(routes: RouteMapping[]): void {
       padCell(headers.appName, widths.appName),
       padCell(headers.port, widths.port),
       padCell(headers.domains, widths.domains),
+      padCell(headers.projectFolder, widths.projectFolder),
       padCell(headers.command, widths.command),
     ].join(" | ")
   );
@@ -543,6 +611,7 @@ function printRouteTable(routes: RouteMapping[]): void {
         padCell(row.appName, widths.appName),
         padCell(row.port, widths.port),
         padCell(row.domains, widths.domains),
+        padCell(row.projectFolder, widths.projectFolder),
         padCell(row.command, widths.command),
       ].join(" | ")
     );
@@ -557,7 +626,7 @@ function registerHostnames(
   port: number,
   pid: number,
   force: boolean,
-  metadata?: { appName?: string; command?: string }
+  metadata?: { appName?: string; command?: string; cwd?: string }
 ): void {
   const registered: string[] = [];
 
@@ -1018,6 +1087,7 @@ async function handleRun(args: string[]): Promise<void> {
     registerHostnames(store, resolved.hostnames, port, process.pid, parsed.force, {
       appName: resolved.name,
       command: commandDisplay,
+      cwd: process.cwd(),
     });
   } catch (error) {
     if (error instanceof RouteConflictError) {

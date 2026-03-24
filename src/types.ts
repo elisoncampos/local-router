@@ -5,6 +5,7 @@ export interface RouteInfo {
   port: number;
   appName?: string;
   command?: string;
+  cwd?: string;
 }
 
 export interface RouteMapping extends RouteInfo {
