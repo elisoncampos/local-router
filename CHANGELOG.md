@@ -1,5 +1,11 @@
 # @elisoncampos/local-router
 
+## 0.4.2
+
+### Patch Changes
+
+- [`c4a3264`](https://github.com/elisoncampos/local-router/commit/c4a326462d0dbb3aaf6797ee38faee66ad995469) Thanks [@elisoncampos](https://github.com/elisoncampos)! - Fixes localhost.run url in banner
+
 ## 0.4.1
 
 ### Patch Changes
