@@ -27,6 +27,7 @@ demo-share.localhost.run tunneled with tls termination, https://demo-share.local
 Welcome to localhost.run!
 https://localhost.run/docs/
 https://localhost.run/docs/custom-domains
+https://admin.localhost.run/
 demo-share.localhost.run tunneled with tls termination, https://demo-share.localhost.run
 `;
 
@@ -52,6 +53,7 @@ demo-share.localhost.run tunneled with tls termination, https://demo-share.local
     const output = `
 To explore using localhost.run visit:
 https://localhost.run/docs/
+https://admin.localhost.run/
 `;
 
     expect(extractLocalhostRunUrl(output)).toBeUndefined();

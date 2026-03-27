@@ -21,6 +21,10 @@ function extractPublicHostname(text: string): string | undefined {
   return matches?.at(-1);
 }
 
+function isTunnelAnnouncement(text: string): boolean {
+  return /tunneled with tls termination|event"\s*:\s*"tcpip-forward"|type"\s*:\s*"opened"/i.test(text);
+}
+
 function extractTunnelUrlFromJsonLines(output: string): string | undefined {
   for (const line of output.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -54,8 +58,13 @@ export function extractLocalhostRunUrl(output: string): string | undefined {
   const jsonUrl = extractTunnelUrlFromJsonLines(output);
   if (jsonUrl) return jsonUrl;
 
-  const hostname = extractPublicHostname(output);
-  return hostname ? `https://${hostname}` : undefined;
+  for (const line of output.split(/\r?\n/)) {
+    if (!isTunnelAnnouncement(line)) continue;
+    const hostname = extractPublicHostname(line);
+    if (hostname) return `https://${hostname}`;
+  }
+
+  return undefined;
 }
 
 export async function startSharedTunnel(options: StartSharedTunnelOptions): Promise<SharedTunnel> {
