@@ -4,7 +4,6 @@ import type { SharedTunnel } from "./types.js";
 const TUNNEL_TIMEOUT_MS = 30_000;
 const TUNNEL_KILL_TIMEOUT_MS = 5_000;
 const LOCALHOST_RUN_HOST_PATTERN = /\b(?:[a-z0-9-]+\.)+(?:localhost\.run|lhr\.life)\b/gi;
-const HTTPS_URL_PATTERN = /https:\/\/[a-z0-9.-]+\b/gi;
 
 interface StartSharedTunnelOptions {
   targetPort: number;
@@ -17,6 +16,11 @@ function formatTunnelError(message: string): Error {
   return new Error(`Failed to start a localhost.run tunnel: ${message}`);
 }
 
+function extractPublicHostname(text: string): string | undefined {
+  const matches = text.match(LOCALHOST_RUN_HOST_PATTERN);
+  return matches?.at(-1);
+}
+
 function extractTunnelUrlFromJsonLines(output: string): string | undefined {
   for (const line of output.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -24,15 +28,15 @@ function extractTunnelUrlFromJsonLines(output: string): string | undefined {
 
     try {
       const parsed = JSON.parse(trimmed) as { address?: unknown; listen_host?: unknown; message?: unknown };
-      if (typeof parsed.address === "string" && LOCALHOST_RUN_HOST_PATTERN.test(parsed.address)) {
-        return `https://${parsed.address}`;
+      if (typeof parsed.address === "string") {
+        const hostname = extractPublicHostname(parsed.address);
+        if (hostname) return `https://${hostname}`;
       }
-      LOCALHOST_RUN_HOST_PATTERN.lastIndex = 0;
 
-      if (typeof parsed.listen_host === "string" && LOCALHOST_RUN_HOST_PATTERN.test(parsed.listen_host)) {
-        return `https://${parsed.listen_host}`;
+      if (typeof parsed.listen_host === "string") {
+        const hostname = extractPublicHostname(parsed.listen_host);
+        if (hostname) return `https://${hostname}`;
       }
-      LOCALHOST_RUN_HOST_PATTERN.lastIndex = 0;
 
       if (typeof parsed.message === "string") {
         const fromMessage = extractLocalhostRunUrl(parsed.message);
@@ -50,17 +54,8 @@ export function extractLocalhostRunUrl(output: string): string | undefined {
   const jsonUrl = extractTunnelUrlFromJsonLines(output);
   if (jsonUrl) return jsonUrl;
 
-  const explicitUrls = output.match(HTTPS_URL_PATTERN);
-  if (explicitUrls && explicitUrls.length > 0) {
-    return explicitUrls.at(-1);
-  }
-
-  const hostnames = output.match(LOCALHOST_RUN_HOST_PATTERN);
-  if (!hostnames || hostnames.length === 0) {
-    return undefined;
-  }
-
-  return `https://${hostnames.at(-1)}`;
+  const hostname = extractPublicHostname(output);
+  return hostname ? `https://${hostname}` : undefined;
 }
 
 export async function startSharedTunnel(options: StartSharedTunnelOptions): Promise<SharedTunnel> {

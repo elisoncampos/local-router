@@ -22,6 +22,17 @@ demo-share.localhost.run tunneled with tls termination, https://demo-share.local
     expect(extractLocalhostRunUrl(output)).toBe("https://demo-share.localhost.run");
   });
 
+  it("ignores localhost.run docs links and waits for the real tunnel hostname", () => {
+    const output = `
+Welcome to localhost.run!
+https://localhost.run/docs/
+https://localhost.run/docs/custom-domains
+demo-share.localhost.run tunneled with tls termination, https://demo-share.localhost.run
+`;
+
+    expect(extractLocalhostRunUrl(output)).toBe("https://demo-share.localhost.run");
+  });
+
   it("extracts a URL from localhost.run JSON output", () => {
     const output = `
 {"connection_id":"abc","event":"authn","message":"authenticated as anonymous user"}
@@ -35,6 +46,15 @@ demo-share.localhost.run tunneled with tls termination, https://demo-share.local
     const output = "0b20df995bc7ac.lhr.life tunneled with tls termination";
 
     expect(extractLocalhostRunUrl(output)).toBe("https://0b20df995bc7ac.lhr.life");
+  });
+
+  it("does not accept the localhost.run root domain as a tunnel URL", () => {
+    const output = `
+To explore using localhost.run visit:
+https://localhost.run/docs/
+`;
+
+    expect(extractLocalhostRunUrl(output)).toBeUndefined();
   });
 
   it(
