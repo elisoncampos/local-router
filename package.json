@@ -1,6 +1,6 @@
 {
   "name": "@elisoncampos/local-router",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Named local domains with automatic HTTP/HTTPS routing for development.",
   "license": "MIT",
   "type": "module",
