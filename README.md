@@ -51,6 +51,16 @@ https://app.example.com
 
 You can repeat `--domain` as many times as needed.
 
+Create a temporary public URL with `localhost.run`:
+
+```bash
+local-router run next dev --share
+```
+
+This keeps your local routes and also prints the public HTTPS URL returned by `localhost.run`, forwarding it to the same app.
+
+`--share` requires `ssh` to be installed locally.
+
 ## `.local-router`
 
 Create a `.local-router` file in the project root using JSON5 syntax:

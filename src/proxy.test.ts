@@ -170,4 +170,46 @@ describe("proxy servers", () => {
     await new Promise<void>((resolve) => bundle.httpServer!.close(() => resolve()));
     await new Promise<void>((resolve) => bundle.httpsServer!.close(() => resolve()));
   });
+
+  it("forwards the configured upstream host when a route overrides it", async () => {
+    const bundle = createProxyServers({
+      getRoutes: () => [
+        {
+          hostname: "demo-share.localhost.run",
+          port: appPort,
+          upstreamHost: "algo.localhost",
+        },
+      ],
+      httpEnabled: true,
+      httpsEnabled: false,
+      httpPort: 18080,
+      httpsPort: 18443,
+    });
+
+    await new Promise<void>((resolve) => bundle.httpServer!.listen(0, "127.0.0.1", () => resolve()));
+
+    const httpPort = (bundle.httpServer!.address() as { port: number }).port;
+
+    const httpBody = await new Promise<string>((resolve, reject) => {
+      http.get(
+        {
+          hostname: "127.0.0.1",
+          port: httpPort,
+          path: "/",
+          headers: { host: "demo-share.localhost.run" },
+        },
+        (res) => {
+          let body = "";
+          res.on("data", (chunk) => {
+            body += chunk.toString("utf-8");
+          });
+          res.on("end", () => resolve(body));
+        }
+      ).on("error", reject);
+    });
+
+    expect(httpBody).toBe(JSON.stringify({ host: "algo.localhost" }));
+
+    await new Promise<void>((resolve) => bundle.httpServer!.close(() => resolve()));
+  });
 });

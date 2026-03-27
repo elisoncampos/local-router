@@ -17,6 +17,7 @@ describe("RouteStore", () => {
       appName: "algo",
       command: "npm run dev",
       cwd: "/tmp/algo",
+      syncToHosts: false,
     });
 
     expect(store.loadRoutes()).toEqual([
@@ -27,6 +28,7 @@ describe("RouteStore", () => {
         appName: "algo",
         command: "npm run dev",
         cwd: "/tmp/algo",
+        syncToHosts: false,
       },
     ]);
   });

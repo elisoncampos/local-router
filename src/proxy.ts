@@ -136,7 +136,7 @@ export function createProxyServers(options: {
     }
 
     const headers: http.OutgoingHttpHeaders = { ...req.headers, ...buildForwardedHeaders(req, authority, httpsRequest) };
-    headers.host = authority;
+    headers.host = route.upstreamHost ?? authority;
     for (const key of Object.keys(headers)) {
       if (key.startsWith(":")) {
         delete headers[key];
@@ -201,7 +201,7 @@ export function createProxyServers(options: {
     }
 
     const headers: http.OutgoingHttpHeaders = { ...req.headers, ...buildForwardedHeaders(req, authority, httpsRequest) };
-    headers.host = authority;
+    headers.host = route.upstreamHost ?? authority;
     for (const key of Object.keys(headers)) {
       if (key.startsWith(":")) {
         delete headers[key];

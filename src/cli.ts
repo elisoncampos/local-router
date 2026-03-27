@@ -11,6 +11,7 @@ import { cleanHostsFile, syncHostsFile } from "./hosts.js";
 import { extractChildCommandFromProcessCommand } from "./process-info.js";
 import { createProxyServers } from "./proxy.js";
 import { DIR_MODE, FILE_MODE, RouteConflictError, RouteStore } from "./routes.js";
+import { startSharedTunnel } from "./share.js";
 import {
   DEFAULT_HTTP_PORT,
   DEFAULT_HTTPS_PORT,
@@ -33,7 +34,7 @@ import {
   waitForProxy,
   writeProxyState,
 } from "./state.js";
-import type { ProxyRuntimeConfig, ProxyTlsOptions, RouteMapping } from "./types.js";
+import type { ProxyRuntimeConfig, ProxyTlsOptions, RouteMapping, SharedTunnel } from "./types.js";
 import { fixOwnership, formatUrl, isErrnoException } from "./utils.js";
 
 const HOSTS_DISPLAY = isWindows ? "hosts file" : "/etc/hosts";
@@ -54,6 +55,8 @@ interface RunOptions {
   appPort?: number;
   name?: string;
   domains: string[];
+  share: boolean;
+  shareDomain?: string;
   commandArgs: string[];
 }
 
@@ -177,6 +180,7 @@ ${chalk.bold("local-router")} - Stable local domains with HTTP and HTTPS on the 
 ${chalk.bold("Core commands:")}
   ${chalk.cyan("local-router run next dev")}                           Infer the project name and expose it as https://<name>.localhost
   ${chalk.cyan("local-router run next dev --domain rapha.com.br")}     Add a real domain override that resolves locally
+  ${chalk.cyan("local-router run next dev --share")}                   Create a public localhost.run tunnel for the current app
   ${chalk.cyan("local-router list")}                                   List registered apps, ports, domains, and commands
   ${chalk.cyan("local-router proxy start")}                            Start the shared proxy daemon
   ${chalk.cyan("local-router proxy stop")}                             Stop the shared proxy daemon
@@ -205,6 +209,7 @@ ${chalk.bold("Config file:")}
 ${chalk.bold("Options:")}
   run --name <name>                Override the inferred .localhost name
   run --domain <host>              Add a custom hostname (repeatable, can be placed after the child command)
+  run --share                      Create a public localhost.run tunnel for the current app
   run --app-port <port>            Force the app port instead of auto-assigning one
   run --force                      Replace an existing route registered by another process
   proxy start --http-port <port>   Override the HTTP listener port (default: ${DEFAULT_HTTP_PORT})
@@ -241,6 +246,7 @@ function parseRunArgs(args: string[]): RunOptions {
   const options: RunOptions = {
     force: false,
     domains: [],
+    share: false,
     commandArgs: [],
   };
 
@@ -286,6 +292,18 @@ function parseRunArgs(args: string[]): RunOptions {
       continue;
     }
 
+    if (!passthrough && token === "--share") {
+      options.share = true;
+
+      const value = args[index + 1];
+      if (options.commandArgs.length > 0 && value && !value.startsWith("-")) {
+        options.shareDomain = value;
+        index += 1;
+      }
+
+      continue;
+    }
+
     if (!passthrough && (token === "--help" || token === "-h")) {
       console.log(`
 ${chalk.bold("local-router run")} - Infer the project name, register hostnames, and run the app.
@@ -293,11 +311,13 @@ ${chalk.bold("local-router run")} - Infer the project name, register hostnames, 
 ${chalk.bold("Usage:")}
   ${chalk.cyan("local-router run <command...>")}
   ${chalk.cyan("local-router run next dev --domain rapha.com.br")}
+  ${chalk.cyan("local-router run next dev --share")}
   ${chalk.cyan('local-router run "npm run start:dev"')}
 
 ${chalk.bold("Flags accepted anywhere before '--':")}
   --name <name>          Override the base .localhost name
   --domain <host>        Add a custom hostname override
+  --share                Create a public localhost.run tunnel for the app
   --app-port <port>      Use a fixed port for the child app
   --force                Replace routes already claimed by another process
 
@@ -407,6 +427,12 @@ function printUrls(hostnames: string[], runtime: ProxyRuntimeConfig): void {
   console.log();
 }
 
+function printShareUrl(publicUrl: string): void {
+  console.log(chalk.blue.bold("Share\n"));
+  console.log(chalk.cyan(`  ${publicUrl}`));
+  console.log();
+}
+
 function getStateDirs(): string[] {
   return Array.from(new Set(getKnownStateDirs()));
 }
@@ -432,10 +458,14 @@ function loadAllRoutes(): RouteMapping[] {
   return routes;
 }
 
+function shouldSyncRouteToHosts(route: RouteMapping): boolean {
+  return route.syncToHosts ?? !isLocalhostHostname(route.hostname);
+}
+
 function syncHostsAcrossStores(): void {
   const hostnames = loadAllRoutes()
-    .map((route) => route.hostname)
-    .filter((hostname) => !isLocalhostHostname(hostname));
+    .filter((route) => shouldSyncRouteToHosts(route))
+    .map((route) => route.hostname);
 
   if (hostnames.length === 0) {
     cleanHostsFile();
@@ -1032,6 +1062,14 @@ async function handleRun(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  if (parsed.shareDomain) {
+    console.error(chalk.red(`Error: custom share domains are not implemented yet ("${parsed.shareDomain}").`));
+    console.error(
+      chalk.gray("For localhost.run custom domains you will need a paid plan, an SSH key, and DNS setup.")
+    );
+    process.exit(1);
+  }
+
   const resolved = resolveProjectHosts({
     explicitName: parsed.name,
     extraDomains: parsed.domains,
@@ -1053,9 +1091,18 @@ async function handleRun(args: string[]): Promise<void> {
     isSystemDir: dir === SYSTEM_STATE_DIR,
     onWarning: (message) => console.warn(chalk.yellow(message)),
   });
+  const registeredHostnames = [...resolved.hostnames];
+  let sharedTunnel: SharedTunnel | undefined;
+  let shareUrl: string | undefined;
 
-  const cleanupRoutes = () => {
-    for (const hostname of resolved.hostnames) {
+  const cleanupRoutes = async () => {
+    if (sharedTunnel) {
+      await sharedTunnel.stop().catch(() => {
+        // Best effort cleanup.
+      });
+    }
+
+    for (const hostname of registeredHostnames) {
       try {
         store.removeRoute(hostname);
       } catch {
@@ -1099,6 +1146,40 @@ async function handleRun(args: string[]): Promise<void> {
   }
 
   printUrls(resolved.hostnames, runtime);
+
+  if (parsed.share) {
+    if (!runtime.httpEnabled) {
+      cleanupRoutes();
+      console.error(chalk.red("Error: --share requires the HTTP proxy to be enabled."));
+      process.exit(1);
+    }
+
+    console.log(chalk.gray("Starting localhost.run tunnel...\n"));
+
+    try {
+      sharedTunnel = await startSharedTunnel({
+        targetPort: runtime.httpPort,
+      });
+
+      store.addRoute(sharedTunnel.publicHostname, port, process.pid, parsed.force, {
+        appName: resolved.name,
+        command: commandDisplay,
+        cwd: process.cwd(),
+        syncToHosts: false,
+        upstreamHost: resolved.baseHostname,
+      });
+      registeredHostnames.push(sharedTunnel.publicHostname);
+      shareUrl = sharedTunnel.publicUrl;
+    } catch (error) {
+      cleanupRoutes();
+      throw error;
+    }
+
+    if (shareUrl) {
+      printShareUrl(shareUrl);
+    }
+  }
+
   if (ensuredProxy.source === "existing") {
     const behavior = ensuredProxy.autoStopsWhenIdle
       ? "It will stop itself again when no apps remain."
@@ -1129,6 +1210,7 @@ async function handleRun(args: string[]): Promise<void> {
       LOCAL_ROUTER_URL: primaryHttpsUrl,
       LOCAL_ROUTER_URLS_HTTPS: allHttpsUrls,
       LOCAL_ROUTER_URLS_HTTP: allHttpUrls,
+      ...(shareUrl ? { LOCAL_ROUTER_SHARE_URL: shareUrl } : {}),
       __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: ".localhost",
     },
     onCleanup: cleanupRoutes,
@@ -1156,8 +1238,8 @@ ${chalk.bold("Usage:")}
   }
 
   const hostnames = loadAllRoutes()
-    .map((route) => route.hostname)
-    .filter((hostname) => !isLocalhostHostname(hostname));
+    .filter((route) => shouldSyncRouteToHosts(route))
+    .map((route) => route.hostname);
 
   if (!syncHostsFile(hostnames)) {
     console.error(chalk.red(`Failed to update ${HOSTS_DISPLAY}.`));

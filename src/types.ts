@@ -6,6 +6,8 @@ export interface RouteInfo {
   appName?: string;
   command?: string;
   cwd?: string;
+  syncToHosts?: boolean;
+  upstreamHost?: string;
 }
 
 export interface RouteMapping extends RouteInfo {
@@ -36,6 +38,12 @@ export interface ResolvedProjectHosts {
   hostnames: string[];
   configPath?: string;
   nameSource: string;
+}
+
+export interface SharedTunnel {
+  publicUrl: string;
+  publicHostname: string;
+  stop: () => Promise<void>;
 }
 
 export interface ProxyTlsOptions {

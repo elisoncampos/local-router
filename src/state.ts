@@ -259,7 +259,7 @@ export function spawnCommand(
   commandArgs: string[],
   options?: {
     env?: NodeJS.ProcessEnv;
-    onCleanup?: () => void;
+    onCleanup?: () => void | Promise<void>;
   }
 ): void {
   const env = { ...(options?.env ?? process.env), PATH: augmentedPath(options?.env) };
@@ -284,21 +284,22 @@ export function spawnCommand(
 
   let exiting = false;
 
-  const cleanup = () => {
+  const cleanup = async () => {
     process.removeListener("SIGINT", onSigInt);
     process.removeListener("SIGTERM", onSigTerm);
     process.removeListener("SIGHUP", onSigHup);
     process.removeListener("uncaughtException", onUncaughtException);
     process.removeListener("unhandledRejection", onUnhandledRejection);
-    options?.onCleanup?.();
+    await options?.onCleanup?.();
   };
 
   const handleSignal = (signal: NodeJS.Signals) => {
     if (exiting) return;
     exiting = true;
     child.kill(signal);
-    cleanup();
-    process.exit(128 + (SIGNAL_CODES[signal] || 15));
+    void cleanup().finally(() => {
+      process.exit(128 + (SIGNAL_CODES[signal] || 15));
+    });
   };
 
   const onSigInt = () => handleSignal("SIGINT");
@@ -309,16 +310,18 @@ export function spawnCommand(
     exiting = true;
     console.error(error.stack || error.message);
     child.kill("SIGTERM");
-    cleanup();
-    process.exit(1);
+    void cleanup().finally(() => {
+      process.exit(1);
+    });
   };
   const onUnhandledRejection = (reason: unknown) => {
     if (exiting) return;
     exiting = true;
     console.error(reason instanceof Error ? reason.stack || reason.message : String(reason));
     child.kill("SIGTERM");
-    cleanup();
-    process.exit(1);
+    void cleanup().finally(() => {
+      process.exit(1);
+    });
   };
   process.on("SIGINT", onSigInt);
   process.on("SIGTERM", onSigTerm);
@@ -330,20 +333,21 @@ export function spawnCommand(
     if (exiting) return;
     exiting = true;
     console.error(`Failed to run command: ${error.message}`);
-    cleanup();
-    process.exit(1);
+    void cleanup().finally(() => {
+      process.exit(1);
+    });
   });
 
   child.on("exit", (code, signal) => {
     if (exiting) return;
     exiting = true;
-    cleanup();
+    void cleanup().finally(() => {
+      if (signal) {
+        process.exit(128 + (SIGNAL_CODES[signal] || 15));
+      }
 
-    if (signal) {
-      process.exit(128 + (SIGNAL_CODES[signal] || 15));
-    }
-
-    process.exit(code ?? 1);
+      process.exit(code ?? 1);
+    });
   });
 }
 

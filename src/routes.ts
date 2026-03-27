@@ -35,7 +35,11 @@ function isValidRoute(value: unknown): value is RouteMapping {
     typeof (value as RouteMapping).pid === "number" &&
     ((value as RouteMapping).appName === undefined || typeof (value as RouteMapping).appName === "string") &&
     ((value as RouteMapping).command === undefined || typeof (value as RouteMapping).command === "string") &&
-    ((value as RouteMapping).cwd === undefined || typeof (value as RouteMapping).cwd === "string")
+    ((value as RouteMapping).cwd === undefined || typeof (value as RouteMapping).cwd === "string") &&
+    ((value as RouteMapping).syncToHosts === undefined ||
+      typeof (value as RouteMapping).syncToHosts === "boolean") &&
+    ((value as RouteMapping).upstreamHost === undefined ||
+      typeof (value as RouteMapping).upstreamHost === "string")
   );
 }
 
@@ -181,7 +185,13 @@ export class RouteStore {
     port: number,
     pid: number,
     force = false,
-    metadata?: { appName?: string; command?: string; cwd?: string }
+    metadata?: {
+      appName?: string;
+      command?: string;
+      cwd?: string;
+      syncToHosts?: boolean;
+      upstreamHost?: string;
+    }
   ): void {
     const normalizedHostname = normalizeExplicitHostname(hostname);
     this.ensureDir();
@@ -204,6 +214,8 @@ export class RouteStore {
         ...(metadata?.appName ? { appName: metadata.appName } : {}),
         ...(metadata?.command ? { command: metadata.command } : {}),
         ...(metadata?.cwd ? { cwd: metadata.cwd } : {}),
+        ...(metadata?.syncToHosts !== undefined ? { syncToHosts: metadata.syncToHosts } : {}),
+        ...(metadata?.upstreamHost ? { upstreamHost: metadata.upstreamHost } : {}),
       });
       this.saveRoutes(nextRoutes);
     } finally {
