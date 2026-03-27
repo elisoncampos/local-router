@@ -1,5 +1,11 @@
 # @elisoncampos/local-router
 
+## 0.4.0
+
+### Minor Changes
+
+- [`6017bbd`](https://github.com/elisoncampos/local-router/commit/6017bbd757bb2025bfbde4e24716f1c050fd99f1) Thanks [@elisoncampos](https://github.com/elisoncampos)! - Added --share support to local-router run using localhost.run, so apps can be exposed through a temporary public HTTPS URL without touching /etc/hosts, while preserving the project's local hostname as the upstream Host header
+
 ## 0.3.1
 
 ### Patch Changes
