@@ -1,5 +1,11 @@
 # @elisoncampos/local-router
 
+## 0.4.1
+
+### Patch Changes
+
+- [`468b2c2`](https://github.com/elisoncampos/local-router/commit/468b2c2b12025aa6f425edc170edf6c7dd6149a6) Thanks [@elisoncampos](https://github.com/elisoncampos)! - Fix an issue where the url returned from localhost.run was not the properly url to be shared
+
 ## 0.4.0
 
 ### Minor Changes
