@@ -1,5 +1,11 @@
 # @elisoncampos/local-router
 
+## 0.3.1
+
+### Patch Changes
+
+- [`5eefe1c`](https://github.com/elisoncampos/local-router/commit/5eefe1c5435b95c04d88469612722500bca30db0) Thanks [@elisoncampos](https://github.com/elisoncampos)! - Fixing an issue with orphaned proxy instances and improving the output of list command
+
 ## 0.3.0
 
 ### Minor Changes
