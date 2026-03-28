@@ -1,5 +1,11 @@
 # @elisoncampos/local-router
 
+## 0.4.3
+
+### Patch Changes
+
+- [`581cb4d`](https://github.com/elisoncampos/local-router/commit/581cb4dadf6139bb30f1be7db1afd4a99da68826) Thanks [@elisoncampos](https://github.com/elisoncampos)! - Fix privileged ports issue when running with --share
+
 ## 0.4.2
 
 ### Patch Changes
