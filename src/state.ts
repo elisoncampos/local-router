@@ -13,7 +13,6 @@ export const PRIVILEGED_PORT_THRESHOLD = 1024;
 export const DEFAULT_HTTP_PORT = 80;
 export const DEFAULT_HTTPS_PORT = 443;
 export const SYSTEM_STATE_DIR = isWindows ? path.join(os.tmpdir(), "local-router") : "/tmp/local-router";
-export const USER_STATE_DIR = path.join(os.homedir(), ".local-router");
 const MIN_APP_PORT = 4000;
 const MAX_APP_PORT = 4999;
 const RANDOM_PORT_ATTEMPTS = 50;
@@ -21,6 +20,8 @@ const SOCKET_TIMEOUT_MS = 750;
 const WAIT_FOR_PROXY_MAX_ATTEMPTS = 60;
 const WAIT_FOR_PROXY_INTERVAL_MS = 250;
 const HEALTH_HEADER = "x-local-router";
+const ROOT_STATE_DIRS = ["/var/root/.local-router", "/root/.local-router"];
+const PROXY_STATE_FILENAMES = new Set(["routes.json", "proxy-state.json", "proxy.pid", "proxy.log"]);
 
 const SIGNAL_CODES: Record<string, number> = {
   SIGHUP: 1,
@@ -41,6 +42,52 @@ export function getDefaultHttpsPort(): number {
   return Number.isInteger(value) && value > 0 && value <= 65_535 ? value : DEFAULT_HTTPS_PORT;
 }
 
+function resolveInvokingUserHome(): string {
+  if (isWindows) return os.homedir();
+
+  const isRoot = (process.getuid?.() ?? -1) === 0;
+  if (!isRoot) return os.homedir();
+
+  const currentHome = process.env.HOME?.trim();
+  if (currentHome && currentHome !== "/var/root" && currentHome !== "/root") {
+    return currentHome;
+  }
+
+  const sudoUser = process.env.SUDO_USER?.trim();
+  if (!sudoUser || sudoUser === "root" || !/^[A-Za-z0-9._-]+$/.test(sudoUser)) {
+    return os.homedir();
+  }
+
+  try {
+    const expandedHome = execSync(`sh -lc 'printf %s ~${sudoUser}'`, {
+      encoding: "utf-8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (expandedHome && !expandedHome.startsWith("~")) {
+      return expandedHome;
+    }
+  } catch {
+    // Fall through to platform defaults.
+  }
+
+  const darwinHome = path.join("/Users", sudoUser);
+  if (process.platform === "darwin" && fs.existsSync(darwinHome)) {
+    return darwinHome;
+  }
+
+  const linuxHome = path.join("/home", sudoUser);
+  if (fs.existsSync(linuxHome)) {
+    return linuxHome;
+  }
+
+  return os.homedir();
+}
+
+export function getUserStateDir(): string {
+  return path.join(resolveInvokingUserHome(), ".local-router");
+}
+
 export function resolveStateDir(runtime?: ProxyRuntimeConfig): string {
   if (process.env.LOCAL_ROUTER_STATE_DIR) return process.env.LOCAL_ROUTER_STATE_DIR;
 
@@ -51,7 +98,7 @@ export function resolveStateDir(runtime?: ProxyRuntimeConfig): string {
     ((runtime?.httpEnabled ?? true) && httpPort < PRIVILEGED_PORT_THRESHOLD ||
       (runtime?.httpsEnabled ?? true) && httpsPort < PRIVILEGED_PORT_THRESHOLD);
 
-  return needsSystemDir ? SYSTEM_STATE_DIR : USER_STATE_DIR;
+  return needsSystemDir ? SYSTEM_STATE_DIR : getUserStateDir();
 }
 
 function readProxyState(dir: string): ProxyState | null {
@@ -68,7 +115,14 @@ function getKnownStateDirsInternal(): string[] {
     return [process.env.LOCAL_ROUTER_STATE_DIR];
   }
 
-  return [USER_STATE_DIR, SYSTEM_STATE_DIR];
+  return Array.from(
+    new Set([
+      getUserStateDir(),
+      path.join(os.homedir(), ".local-router"),
+      ...(!isWindows ? ROOT_STATE_DIRS : []),
+      SYSTEM_STATE_DIR,
+    ])
+  );
 }
 
 function stateMatchesRuntime(state: ProxyState, runtime: ProxyRuntimeConfig): boolean {
@@ -145,7 +199,7 @@ export async function discoverState(): Promise<{ dir: string; state: ProxyState 
     return { dir, state: readProxyState(dir) };
   }
 
-  for (const dir of [USER_STATE_DIR, SYSTEM_STATE_DIR]) {
+  for (const dir of getKnownStateDirsInternal()) {
     const state = readProxyState(dir);
     if (!state) continue;
 
@@ -165,6 +219,37 @@ export async function discoverState(): Promise<{ dir: string; state: ProxyState 
   return { dir: resolveStateDir(fallback), state: null };
 }
 
+export function parseStateDirFromLsofOutput(output: string): string | undefined {
+  for (const line of output.split(/\r?\n/)) {
+    if (!line.startsWith("n") || line.length <= 1) continue;
+
+    const candidatePath = line.slice(1).trim();
+    if (!candidatePath) continue;
+
+    const basename = path.basename(candidatePath);
+    if (!PROXY_STATE_FILENAMES.has(basename)) continue;
+
+    return path.dirname(candidatePath);
+  }
+
+  return undefined;
+}
+
+function inferStateDirFromPid(pid: number): string | undefined {
+  if (isWindows) return undefined;
+
+  try {
+    const output = execSync(`lsof -a -p ${pid} -Fn`, {
+      encoding: "utf-8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return parseStateDirFromLsofOutput(output);
+  } catch {
+    return undefined;
+  }
+}
+
 export async function discoverStateForRuntime(
   runtime: ProxyRuntimeConfig
 ): Promise<{ dir: string; state: ProxyState | null }> {
@@ -173,6 +258,24 @@ export async function discoverStateForRuntime(
     if (!state || !stateMatchesRuntime(state, runtime)) continue;
 
     if (await isProxyRunning(state)) {
+      return { dir, state };
+    }
+  }
+
+  if (await isProxyRunning(runtime)) {
+    const probePort = runtime.httpEnabled ? runtime.httpPort : runtime.httpsPort;
+    const pid = findPidOnPort(probePort);
+    if (pid !== null) {
+      const dir = inferStateDirFromPid(pid) ?? resolveStateDir(runtime);
+      const state = readProxyState(dir) ?? {
+        pid,
+        httpPort: runtime.httpPort,
+        httpsPort: runtime.httpsPort,
+        httpEnabled: runtime.httpEnabled,
+        httpsEnabled: runtime.httpsEnabled,
+        autoStopWhenIdle: true,
+      };
+
       return { dir, state };
     }
   }

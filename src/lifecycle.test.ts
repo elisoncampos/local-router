@@ -84,6 +84,7 @@ async function request(hostname: string, port: number): Promise<string> {
 let fixtureDir: string;
 let appDir: string;
 let stateDir: string;
+let alternateStateDir: string;
 let child: ChildProcess | undefined;
 let proxyChild: ChildProcess | undefined;
 
@@ -91,8 +92,10 @@ beforeEach(() => {
   fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "local-router-lifecycle-test-"));
   appDir = path.join(fixtureDir, "app");
   stateDir = path.join(fixtureDir, "state");
+  alternateStateDir = path.join(fixtureDir, "alternate-state");
   fs.mkdirSync(appDir, { recursive: true });
   fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(alternateStateDir, { recursive: true });
 
   fs.writeFileSync(path.join(appDir, "package.json"), JSON.stringify({ name: "lifecycle-app" }));
   fs.writeFileSync(
@@ -232,6 +235,52 @@ describe("local-router lifecycle", () => {
       await waitFor(() => proxyChild!.exitCode !== null || proxyChild!.signalCode !== null, 10_000);
 
       await expect(request("demo.localhost", httpPort)).rejects.toThrow();
+    },
+    50_000
+  );
+
+  it(
+    "reuses a healthy proxy even when the caller points at a different state directory",
+    async () => {
+      const httpPort = await getFreePort();
+      const httpsPort = await getFreePort();
+
+      proxyChild = spawn(TSX_CLI, [CLI_PATH, "proxy", "start", "--foreground"], {
+        cwd: appDir,
+        env: {
+          ...process.env,
+          LOCAL_ROUTER_STATE_DIR: stateDir,
+          LOCAL_ROUTER_HTTP_PORT: String(httpPort),
+          LOCAL_ROUTER_HTTPS_PORT: String(httpsPort),
+        },
+        stdio: "ignore",
+      });
+
+      await waitFor(() => fs.existsSync(path.join(stateDir, "proxy-state.json")), 15_000);
+
+      child = spawn(TSX_CLI, [CLI_PATH, "run", "node", "server.cjs"], {
+        cwd: appDir,
+        env: {
+          ...process.env,
+          LOCAL_ROUTER_STATE_DIR: alternateStateDir,
+          LOCAL_ROUTER_HTTP_PORT: String(httpPort),
+          LOCAL_ROUTER_HTTPS_PORT: String(httpsPort),
+        },
+        stdio: "ignore",
+      });
+
+      await waitFor(async () => {
+        try {
+          return (await request("demo.localhost", httpPort)) === "ok";
+        } catch {
+          return false;
+        }
+      }, 25_000);
+
+      child.kill("SIGINT");
+      await waitFor(() => child!.exitCode !== null || child!.signalCode !== null, 10_000);
+      await waitFor(() => !fs.existsSync(path.join(stateDir, "proxy-state.json")), 15_000);
+      await waitFor(() => proxyChild!.exitCode !== null || proxyChild!.signalCode !== null, 10_000);
     },
     50_000
   );

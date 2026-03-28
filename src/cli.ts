@@ -157,6 +157,10 @@ function getLocalhostOnlyRuntime(): ProxyRuntimeConfig {
   };
 }
 
+function shouldPreferPrivilegedRuntime(): boolean {
+  return !isWindows && (process.getuid?.() ?? -1) === 0;
+}
+
 function resolveRuntimeSelection(hostnames: string[]): RuntimeSelection {
   const defaultRuntime = getDefaultRuntime();
 
@@ -164,6 +168,13 @@ function resolveRuntimeSelection(hostnames: string[]): RuntimeSelection {
     return {
       runtime: defaultRuntime,
       alternativeRuntimes: [],
+    };
+  }
+
+  if (shouldPreferPrivilegedRuntime()) {
+    return {
+      runtime: defaultRuntime,
+      alternativeRuntimes: [getLocalhostOnlyRuntime()],
     };
   }
 
